@@ -201,8 +201,8 @@ class DockEventMonitor {
         let screenHeight = NSScreen.main?.frame.height ?? 800
         if location.y < (screenHeight - 100) { return Unmanaged.passRetained(event) }
         
-        // 防抖
-        if Date().timeIntervalSince(lastProcessedTime) < 0.3 { return Unmanaged.passRetained(event) }
+        // 防抖：缩短至 0.1s，适应快速连击
+        if Date().timeIntervalSince(lastProcessedTime) < 0.1 { return Unmanaged.passRetained(event) }
         
         // 4. --- 终极防御：给所有的业务逻辑加一个“超时保险箱” ---
         // 我们在后台线程执行业务代码，如果 10ms 内没跑完（说明系统 AX 或 Workspace 锁住了），
@@ -251,34 +251,38 @@ class DockEventMonitor {
                                 }
                             }
                             
-                            if !hasVisibleWindows {
+                            // ⭐️ 核心修复：如果是 Finder，即便没有可见窗口也要继续逻辑（去恢复被缩小的窗口）。
+                            // 如果是其他应用，确实没有窗口时才放行。
+                            // ⭐️ 核心修复：如果是 Finder，即便没有可见窗口也要继续逻辑（去恢复被缩小的窗口）。
+                            // 如果是其他应用，确实没有窗口时才放行。
+                            if !hasVisibleWindows && clickedBundleId != "com.apple.finder" {
                                 // App 未隐藏，但在屏幕上找不到 >100x100 的窗口 -> 真正的无窗口状态 -> 放行给系统 Reopen
                                 semaphore.signal()
                                 return
                             }
                         }
                         
-                        // --- 拦截逻辑 ---
+                        // ⭐️ UI 瞬间响应：先发通知，后调逻辑。保证指示条第一秒就变。
+                        // 如果已经在前台，意图是 Toggle (最小化/恢复)
+                        // 如果在后台，意图是 Activate (提升至最前)
+                        let isFinder = clickedBundleId == "com.apple.finder"
+                        let isAlreadyActive = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == clickedBundleId
+                        let action = isAlreadyActive ? "toggle" : "activate"
                         
-                        // 获取当前活跃应用，判定是“背景切前台”还是“前台自切换”
-                        if let activeApp = NSWorkspace.shared.frontmostApplication,
-                           activeApp.bundleIdentifier == clickedBundleId {
-                            // A. 已在前台：执行 Toggle (最小化或恢复)
-                            // 这里不再需要重复检查窗口，因为上面已经放行了 0 窗口的情况。
-                            // 能走到这里，说明要么是 hidden，要么有 visible windows。
-                            DispatchQueue.main.async { 
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("DockIconClicked"),
+                            object: nil,
+                            userInfo: ["bundleId": clickedBundleId, "action": action]
+                        )
+                        
+                        DispatchQueue.main.async { 
+                            if action == "toggle" {
                                 WindowManager.shared.toggleWindows(for: targetApp)
-                                NotificationCenter.default.post(name: NSNotification.Name("DockIconClicked"), object: nil, userInfo: ["bundleId": clickedBundleId, "action": "toggle"])
-                            }
-                            resultEvent = nil 
-                        } else {
-                            // B. 还在后台：执行 Ensure Visible (强制一次性恢复并弹出所有窗口)
-                            DispatchQueue.main.async { 
+                            } else {
                                 WindowManager.shared.ensureWindowsVisible(for: targetApp)
-                                NotificationCenter.default.post(name: NSNotification.Name("DockIconClicked"), object: nil, userInfo: ["bundleId": clickedBundleId, "action": "activate"])
                             }
-                            resultEvent = nil 
-                        } 
+                        }
+                        resultEvent = nil 
                     } else {
                         // 2. 该应用未运行...
                     }

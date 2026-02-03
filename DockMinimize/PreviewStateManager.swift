@@ -68,9 +68,19 @@ class PreviewStateManager {
     /// 当前激活的窗口（有蓝色边框）
     private(set) var activeWindowIds: Set<CGWindowID> = []
     
-    /// 重置活跃窗口列表（当重新扫描到最新窗口状态时调用）
+    /// 重置活跃窗口列表
     func resetActiveWindows(_ ids: Set<CGWindowID>) {
         self.activeWindowIds = ids
+    }
+    
+    /// 添加活跃窗口 (内部使用，不触发广播)
+    func addActiveWindow(_ id: CGWindowID) {
+        self.activeWindowIds.insert(id)
+    }
+    
+    /// 移除活跃窗口 (内部使用，不触发广播)
+    func removeActiveWindow(_ id: CGWindowID) {
+        self.activeWindowIds.remove(id)
     }
     
     /// 是否正在滚动
@@ -496,8 +506,13 @@ class PreviewStateManager {
         let windowId = windowInfo.windowId
         
         // ⭐️ 单窗口优化模式：直接 Hide App
-        let allWindows = WindowThumbnailService.shared.getWindows(for: currentAppBundleId ?? "")
-        if allWindows.count <= 1 {
+        let appBundleId = currentAppBundleId ?? ""
+        let allWindows = WindowThumbnailService.shared.getWindows(for: appBundleId)
+        
+        // Finder 特殊处理：即使是单窗口，也绝不隐藏应用，而是最小化窗口
+        if appBundleId == "com.apple.finder" {
+            // 继续执行下面的 AX 最小化逻辑
+        } else if allWindows.count <= 1 {
              if let app = NSRunningApplication(processIdentifier: windowInfo.ownerPID) {
                 app.hide()
                 log.log("✅ Hidden app (Single Window Mode) for window \(windowId)")

@@ -26,7 +26,10 @@ class WindowManager {
         
         // 1. 唤醒阶段 (Wake Up Phase)
         // 如果 App 是隐藏的 (Cmd+H) 或 后台的 (Not Active)
-        if wasHidden || !wasActive {
+        // ⭐️ Finder 特殊处理：跳过 !wasActive 检查，因为 Finder 在只有桌面时可能报告 inactive
+        let shouldWakeUp = wasHidden || (bundleId != "com.apple.finder" && !wasActive)
+        
+        if shouldWakeUp {
             // 直接由系统接管。
             if wasHidden {
                 app.unhide()
@@ -44,7 +47,7 @@ class WindowManager {
         let windowCount = windows.count
         
         // 防止连击 (Debounce)，但单窗口允许极速响应
-        if windowCount > 1 {
+        if windowCount > 1 && bundleId != "com.apple.finder" {
             guard !isTransitioning else { return }
         }
         
@@ -64,7 +67,36 @@ class WindowManager {
             return
         }
         
-        // 强制使用 "Hide" 模式
+        // Finder 特殊逻辑：使用第一个窗口作为“确定性锚点”进行切换
+        if bundleId == "com.apple.finder" {
+            // ⭐️ 核心改进：不再使用 allSatisfy，而是直接以第一个窗口的状态作为基准。
+            // 这样能保证每次点击都有明确的切换方向，且与指示条同步。
+            let isFirstMinimized = windows.first?.isMinimized ?? true
+
+            if isFirstMinimized {
+                // 如果第一个是缩小的 -> 全部恢复
+                restoreAllWindows(windows: windows, app: app)
+                minimizedApps.remove(bundleId)
+            } else {
+                // 如果第一个是展开的 -> 全部缩小
+                DispatchQueue.global(qos: .userInteractive).async {
+                    for window in windows {
+                        if !window.isMinimized {
+                            _ = AXUIElementSetAttributeValue(window.axElement, kAXMinimizedAttribute as CFString, true as CFTypeRef)
+                        }
+                    }
+                }
+                minimizedApps.insert(bundleId)
+            }
+
+            // 极速解锁
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.isTransitioning = false 
+            }
+            return
+        }
+        
+        // 强制使用 "Hide" 模式 (其他应用)
         toggleHide(for: app, bundleId: bundleId)
         
         // 极速解锁
@@ -85,8 +117,9 @@ class WindowManager {
         restoreAllWindows(appElement: appElement, app: app)
         minimizedApps.remove(bundleId)
         
-        // ⭐️ 固定延时解锁
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+        // ⭐️ 固定延时解锁：Finder 缩短为 0.1s 以实现极致丝滑，其他应用维持 0.5s
+        let delay = (bundleId == "com.apple.finder") ? 0.1 : 0.5
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             self?.isTransitioning = false 
         }
     }

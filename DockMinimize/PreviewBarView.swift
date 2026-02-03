@@ -277,35 +277,45 @@ class PreviewBarViewModel: ObservableObject {
             // 所以，如果 action 是 "toggle"，说明它判定为前台 -> 我们预测为 Minimize
             // 如果 action 是 "activate"，说明它判定为后台 -> 我们预测为 Activate
             
-            let shouldMinimize = (action == "toggle")
+            let shouldMinimize: Bool
+            if action == "activate" {
+                // 背景切前台：意图肯定是 Restore/Activate (变为蓝色)
+                shouldMinimize = false
+            } else {
+                // 当前已在前台：执行 Toggle
+                if let first = self.windows.first {
+                    shouldMinimize = !first.isMinimized
+                } else {
+                    shouldMinimize = false
+                }
+            }
             
-            // 批量应用状态
+            self.log.log("⚡️ UI Sync: Bundle=\(bundleId), Action=\(action), IdentifyingShouldMinimize=\(shouldMinimize)")
+
+            // 1. 瞬间翻转所有指示条
             for i in 0..<self.windows.count {
                 var window = self.windows[i]
-                let wasHidden = window.isMinimized
                 
-                // 设置新状态
+                let wasHidden = window.isMinimized
                 window.isMinimized = shouldMinimize
                 
-                // 触发动画
-                if !shouldMinimize {
-                    // 如果是变显示 (Blue)
-                    if !wasHidden {
-                        // 之前就是显示的 -> 触发上抬 (Bump)
-                        self.bumpTriggers[window.windowId] = Date()
-                        self.log.log("⚡️ Dock Click: Bumping window \(window.windowId)")
-                    } else {
-                        // 之前是隐藏的 -> 伸展 (Expand) - 无需额外 Trigger，isMinimized 变化自带动画
-                        self.log.log("⚡️ Dock Click: Expanding window \(window.windowId)")
-                    }
+                // 2. 同步高度活跃状态
+                if shouldMinimize {
+                    self.stateManager.removeActiveWindow(window.windowId)
                 } else {
-                    self.log.log("⚡️ Dock Click: Shrinking window \(window.windowId)")
+                    self.stateManager.addActiveWindow(window.windowId)
                 }
+                
+                // 3. ⭐️ 精准动画逻辑 (Bump)
+                // 只有在：动作是 Activate (前台切换) 且 窗口本身就是展开的 (Blue) 时，才触发上抬。
+                if action == "activate" && !wasHidden {
+                    self.bumpTriggers[window.windowId] = Date()
+                } 
                 
                 self.windows[i] = window
             }
             
-            // 稍后刷新缩略图确保 UI 同步
+            // 稍后刷新以补获最终稳定的缩略图
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 self.refreshThumbnails(forceRefresh: true)
             }
@@ -317,8 +327,13 @@ class PreviewBarViewModel: ObservableObject {
         currentApp = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first
         
         let newWindows = thumbnailService.getWindows(for: bundleId)
-        // 只有窗口列表真的变了才重刷，防止滚动中重置
-        if newWindows.count != windows.count || newWindows.map({$0.windowId}) != windows.map({$0.windowId}) {
+        
+        // ⭐️ 修正：不仅检查数量和 ID，还要检查最小化状态是否发生变化
+        // 这样当窗口在后台被状态改变时（比如系统自动展开某窗口），UI 能同步刷新
+        let hasCountOrIdChange = newWindows.count != windows.count || newWindows.map({$0.windowId}) != windows.map({$0.windowId})
+        let hasStateChange = zip(newWindows, windows).contains { $0.0.isMinimized != $0.1.isMinimized }
+        
+        if hasCountOrIdChange || hasStateChange {
             windows = newWindows
             refreshThumbnails(forceRefresh: true)
         }
