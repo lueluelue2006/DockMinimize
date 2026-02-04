@@ -412,10 +412,6 @@ class PreviewBarController: NSObject {
         let screenHeight = screen.frame.height
         let appKitY = screenHeight - iconPosition.y
         
-        // 预览条应该紧贴 Dock（Dock 高度约 70px，减去一点让预览条更靠近）
-        let x = iconPosition.x - windowSize.width / 2
-        let y = appKitY - 10 // 紧贴 Dock 上方，只留 -10 像素缝隙（向下调整）
-        
         // 确保不覆盖 Dock：用 visibleFrame 作为安全区，并在 Dock 方向额外留一点像素缝隙。
         let edgeMargin: CGFloat = 10
         let dockGap: CGFloat = 12
@@ -424,7 +420,8 @@ class PreviewBarController: NSObject {
         let safeMaxX = safe.maxX
         let safeMaxY = safe.maxY
 
-        if let orientation = currentDockOrientation() {
+        var dockOrientation = currentDockOrientation()
+        if let orientation = dockOrientation {
             let reserved = dockThickness(on: screen, orientation: orientation) + dockGap
             switch orientation {
             case .right:
@@ -439,6 +436,8 @@ class PreviewBarController: NSObject {
                 safe.origin.y = newMinY
                 safe.size.height = max(0, safeMaxY - newMinY)
             }
+        } else {
+            dockOrientation = nil
         }
 
         let minX = safe.minX
@@ -446,8 +445,18 @@ class PreviewBarController: NSObject {
         let minY = max(80, safe.minY) // 至少在 Dock 上方（保留原逻辑的最小高度）
         let maxY = max(minY, safe.maxY - windowSize.height)
 
-        let clampedX = min(max(x, minX), maxX)
-        let clampedY = min(max(y, minY), maxY)
+        // 默认：预览条紧贴 Dock（Dock 在底部时体验最好）
+        var proposedX = iconPosition.x - windowSize.width / 2
+        var proposedY = appKitY - 10 // 紧贴 Dock 上方，只留 -10 像素缝隙（向下调整）
+
+        // Dock 在左/右侧时，把预览条放到屏幕中间（更稳定，也避免“贴边/遮挡 Dock”）
+        if dockOrientation == .left || dockOrientation == .right {
+            proposedX = safe.midX - windowSize.width / 2
+            proposedY = safe.midY - windowSize.height / 2
+        }
+
+        let clampedX = min(max(proposedX, minX), maxX)
+        let clampedY = min(max(proposedY, minY), maxY)
         
         return NSPoint(x: clampedX, y: clampedY)
     }
