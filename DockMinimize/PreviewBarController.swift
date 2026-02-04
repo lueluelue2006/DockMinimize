@@ -68,11 +68,11 @@ class PreviewBarController: NSObject {
                 return
             }
             
-            // B. 如果点击在 Dock 区域内，不隐藏
-            // 对于底部 Dock，简单判定为屏幕底部 100px。
-            // 这样点击图标展开/收回时，预览条会保持稳定。
+            // B. 如果点击在 Dock 图标上，不隐藏
+            // 旧逻辑仅按“屏幕底部 100px”判断 Dock，Dock 在左/右侧时会误判导致预览条立刻消失。
             let screenHeight = NSScreen.main?.frame.height ?? 800
-            if mouseLocation.y < 100 {
+            let cgMousePos = CGPoint(x: mouseLocation.x, y: screenHeight - mouseLocation.y)
+            if DockIconCacheManager.shared.getBundleId(at: cgMousePos) != nil {
                 return
             }
             
