@@ -230,6 +230,9 @@ class PreviewBarViewModel: ObservableObject {
     /// 用于通过 ScrollViewReader 控制偏移
     @Published var scrollTargetId: CGWindowID?
     
+    /// ⭐️ 活跃窗口集合（用于驱动指示条透明度）
+    @Published var activeWindowIds: Set<CGWindowID> = []
+    
     /// 用于触发上抬动画
     @Published var bumpTriggers: [CGWindowID: Date] = [:]
     
@@ -327,27 +330,31 @@ class PreviewBarViewModel: ObservableObject {
             
             self.log.log("⚡️ UI Sync: Bundle=\(bundleId), Action=\(action), IdentifyingShouldMinimize=\(shouldMinimize)")
 
-            // 1. 瞬间翻转所有指示条
+            // 1. 瞬间翻转所有指示条最小化状态
             for i in 0..<self.windows.count {
                 var window = self.windows[i]
-                
-                let wasHidden = window.isMinimized
                 window.isMinimized = shouldMinimize
-                
-                // 2. 同步高度活跃状态
-                if shouldMinimize {
-                    self.stateManager.removeActiveWindow(window.windowId)
-                } else {
-                    self.stateManager.addActiveWindow(window.windowId)
-                }
-                
-                // 3. ⭐️ 精准动画逻辑 (Bump)
-                // 只有在：动作是 Activate (前台切换) 且 窗口本身就是展开的 (Blue) 时，才触发上抬。
-                if action == "activate" && !wasHidden {
-                    self.bumpTriggers[window.windowId] = Date()
-                } 
-                
                 self.windows[i] = window
+            }
+            
+            // 2. ⭐️ 核心修复：不要在循环中盲目 addActiveWindow（会导致所有条都亮蓝）
+            // 如果是还原操作，在一段极短的延时后同步真实焦点，确保只有一个条是高亮的
+            if !shouldMinimize {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    self.stateManager.syncFocusState(for: bundleId)
+                }
+            } else {
+                // 如果是全部最小化，直接清空活跃状态
+                self.stateManager.setSingleActiveWindow(nil)
+            }
+            
+            // 3. ⭐️ 精准动画逻辑 (Bump)
+            if action == "activate" {
+                for window in self.windows {
+                    if !window.isMinimized {
+                        self.bumpTriggers[window.windowId] = Date()
+                    }
+                }
             }
             
             // 稍后刷新以补获最终稳定的缩略图
@@ -474,7 +481,7 @@ class PreviewBarViewModel: ObservableObject {
         }
     }
     
-    func isWindowActive(_ windowId: CGWindowID) -> Bool { stateManager.isWindowActive(windowId) }
+    func isWindowActive(_ windowId: CGWindowID) -> Bool { activeWindowIds.contains(windowId) }
     
     private func updateScrollIndicators() {
         // 使用实际窗口数量进行逻辑判定

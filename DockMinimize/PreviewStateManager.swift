@@ -45,6 +45,9 @@ protocol PreviewStateManagerDelegate: AnyObject {
     
     /// 请求无缝退出（淡出动画）
     func previewStateManager(_ manager: PreviewStateManager, performSeamlessExit: Bool)
+    
+    /// ⭐️ 新增：同步活跃窗口集合
+    func previewStateManager(_ manager: PreviewStateManager, didUpdateActiveWindows activeIds: Set<CGWindowID>)
 }
 
 class PreviewStateManager {
@@ -66,21 +69,26 @@ class PreviewStateManager {
     private(set) var currentAppBundleId: String?
     
     /// 当前激活的窗口（有蓝色边框）
-    private(set) var activeWindowIds: Set<CGWindowID> = []
+    private(set) var activeWindowIds: Set<CGWindowID> = [] {
+        didSet {
+            if activeWindowIds != oldValue {
+                delegate?.previewStateManager(self, didUpdateActiveWindows: activeWindowIds)
+            }
+        }
+    }
     
     /// 重置活跃窗口列表
     func resetActiveWindows(_ ids: Set<CGWindowID>) {
         self.activeWindowIds = ids
     }
     
-    /// 添加活跃窗口 (内部使用，不触发广播)
-    func addActiveWindow(_ id: CGWindowID) {
-        self.activeWindowIds.insert(id)
-    }
-    
-    /// 移除活跃窗口 (内部使用，不触发广播)
-    func removeActiveWindow(_ id: CGWindowID) {
-        self.activeWindowIds.remove(id)
+    /// ⭐️ 统一更新活跃状态的方法
+    func setSingleActiveWindow(_ id: CGWindowID?) {
+        if let id = id {
+            self.activeWindowIds = [id]
+        } else {
+            self.activeWindowIds = []
+        }
     }
     
     /// 是否正在滚动
@@ -106,9 +114,20 @@ class PreviewStateManager {
     
     /// 主动同步指定应用的焦点状态
     func syncFocusState(for bundleId: String) {
-        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first else { return }
-        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        // ⭐️ 核心修正：首先重置活跃集合
+        self.activeWindowIds = []
         
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first else { return }
+        
+        // ⭐️ 关键判别：如果该应用本身不是系统最前端应用，那么它的所有窗口都不应该是“活跃颜色”
+        // 即使它内部有一个“最后焦点记录”，由于它在后台，指示条也应该统一表现为 50% 透明度
+        let frontmostApp = NSWorkspace.shared.frontmostApplication
+        guard frontmostApp?.bundleIdentifier == bundleId else {
+            log.log("📱 App \(bundleId) is in background (Frontmost: \(frontmostApp?.bundleIdentifier ?? "none")). All indicators will be 50% opacity.")
+            return
+        }
+        
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
         var focusedWindow: AnyObject?
         let result = AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &focusedWindow)
         
@@ -116,7 +135,8 @@ class PreviewStateManager {
             var focusedWindowId: CGWindowID = 0
             if _AXUIElementGetWindow(focusedElement as! AXUIElement, &focusedWindowId) == .success {
                 self.lastFocusedWindowId = focusedWindowId
-                log.log("🎯 Synced focus state: Window \(focusedWindowId) is frontmost for \(bundleId)")
+                self.activeWindowIds = [focusedWindowId]
+                log.log("🎯 Synced focus state: Window \(focusedWindowId) is top-level focus.")
             }
         }
     }
@@ -298,7 +318,7 @@ class PreviewStateManager {
             
             // 立即激活窗口 (先上车)
             self.activateWindow(windowInfo: windowInfo)
-            self.activeWindowIds.insert(windowId) // 标记为活跃
+            self.activeWindowIds = [windowId] // ⭐️ 切换焦点：清空旧的，仅保留当前点击的
             self.log.log("📈 Activated window \(windowId)")
             
             // 执行无缝退出动画 (后撤梯)

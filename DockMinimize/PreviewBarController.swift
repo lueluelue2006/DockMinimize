@@ -139,9 +139,8 @@ class PreviewBarController: NSObject {
             log.log("📺 Reusing existing VM for \(bundleId)")
             existingVM.loadWindows(for: bundleId)
             
-            // 依然需要同步活跃窗口状态
-            let openedWindowIds = Set(existingVM.windows.filter { !$0.isMinimized }.map { $0.windowId })
-            stateManager.resetActiveWindows(openedWindowIds)
+            // 依然需要加载窗口
+            existingVM.loadWindows(for: bundleId)
         } else {
             log.log("📺 Creating new VM for \(bundleId)")
             // 创建新视图模型前，彻底切断旧视图树，防止由于视图复用导致的内存冲突
@@ -152,9 +151,6 @@ class PreviewBarController: NSObject {
             let vm = PreviewBarViewModel(stateManager: stateManager)
             vm.loadWindows(for: bundleId)
             viewModel = vm
-            
-            let openedWindowIds = Set(vm.windows.filter { !$0.isMinimized }.map { $0.windowId })
-            stateManager.resetActiveWindows(openedWindowIds)
             
             if let window = previewWindow {
                 // 确保 vm 没有因为 loadWindows 失败变为空（虽然逻辑上不会，但加个保险）
@@ -395,6 +391,12 @@ extension PreviewBarController: PreviewStateManagerDelegate {
     
     func previewStateManager(_ manager: PreviewStateManager, hidePreview: Bool) {
         hidePreviewBar()
+    }
+    
+    func previewStateManager(_ manager: PreviewStateManager, didUpdateActiveWindows activeIds: Set<CGWindowID>) {
+        DispatchQueue.main.async { [weak self] in
+            self?.viewModel?.activeWindowIds = activeIds
+        }
     }
     
 

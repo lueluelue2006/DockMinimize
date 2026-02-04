@@ -90,10 +90,12 @@ struct ThumbnailCardView: View {
             // 显示状态：长蓝条
             Capsule()
                 .fill(windowInfo.isMinimized ? Color.secondary.opacity(0.5) : Color(nsColor: .controlAccentColor))
+                .opacity(windowInfo.isMinimized ? 1.0 : (isActive ? 1.0 : 0.5)) // ⭐️ 非活跃显示窗口设置为 50% 透明度
                 .frame(width: windowInfo.isMinimized ? 16 : 42, height: 4)
                 .offset(y: isBumping ? -8 : 0) // ⭐️ 上抬动画
                 .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isBumping) // 弹性动画
                 .animation(.spring(response: 0.3, dampingFraction: 0.7), value: windowInfo.isMinimized)
+                .animation(.easeInOut(duration: 0.2), value: isActive) // ⭐️ 透明度平滑切换
                 .padding(.top, 2)
                 .onChange(of: bumpTrigger) { _ in
                     // 触发上抬 -> 下落动画
