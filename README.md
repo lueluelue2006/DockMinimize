@@ -1,6 +1,7 @@
 # DockMinimize
 
 DockMinimize is an enhancement tool for macOS that fills a long-standing gap in Dock interaction: the ability to hide or restore windows by clicking their Dock icons.
+Website：https://ivean.com/dockminimize/
 
 ## Features
 
@@ -43,6 +44,7 @@ This project is licensed under the MIT License.
 # DockMinimize (中文版)
 
 DockMinimize 是一款为 macOS 打造的增强工具，它弥补了 macOS 在 Dock 交互上的一个长期空缺：通过点击 Dock 图标来隐藏或恢复窗口。
+官方网站：https://ivean.com/dockminimize/
 
 ## 功能特性
 
