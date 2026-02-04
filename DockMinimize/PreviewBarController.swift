@@ -449,10 +449,9 @@ class PreviewBarController: NSObject {
         var proposedX = iconPosition.x - windowSize.width / 2
         var proposedY = appKitY - 10 // 紧贴 Dock 上方，只留 -10 像素缝隙（向下调整）
 
-        // Dock 在左/右侧时，把预览条放到屏幕中间（更稳定，也避免“贴边/遮挡 Dock”）
+        // Dock 在左/右侧时：让 Dock 图标落在预览条的垂直中线（更符合直觉）
         if dockOrientation == .left || dockOrientation == .right {
-            proposedX = safe.midX - windowSize.width / 2
-            proposedY = safe.midY - windowSize.height / 2
+            proposedY = appKitY - windowSize.height / 2
         }
 
         let clampedX = min(max(proposedX, minX), maxX)

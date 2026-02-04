@@ -163,7 +163,7 @@ class HoverEventMonitor {
     
     func getDockIconPosition(for bundleId: String) -> CGPoint? {
         if let icon = DockIconCacheManager.shared.cachedIcons.first(where: { $0.bundleId == bundleId }) {
-            return CGPoint(x: icon.frame.midX, y: icon.frame.minY)
+            return CGPoint(x: icon.frame.midX, y: icon.frame.midY)
         }
         return nil
     }
