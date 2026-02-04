@@ -439,6 +439,26 @@ private var smallWindowPreviewContent: some View {
                 }
                 .padding(.vertical, 4)
             }
+            
+            if settingsManager.enableOriginalPreview {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "lightbulb.fill")
+                        .foregroundColor(.orange)
+                        .font(.title2)
+                    
+                    Text(t("对于“访达”和其他开启了多窗口的软件，DockMinimize会改用“最小化窗口”的方式来实现窗口消失和展现。你可能会看到预览图的背面有一个短暂的“神奇效果/缩放效果”动画。", 
+                           "For \"Finder\" and other apps with multiple windows, DockMinimize will use the \"Minimize Window\" method for transitions. You might see a brief \"Genie/Scale effect\" animation behind the preview."))
+                        .font(.subheadline)
+                        .lineSpacing(4)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    
+                    Spacer()
+                }
+                .padding(16)
+                .background(Color.orange.opacity(0.1))
+                .cornerRadius(12)
+            }
         }
     }
 }
@@ -622,7 +642,7 @@ private func toggleRowWithDesc(title: String, desc: String, isOn: Binding<Bool>)
                         .foregroundColor(isSelected ? .white : .accentColor)
                 }
                 
-                Text(tab.displayName(t: t))
+                Text(tab == .smallWindowPreview ? t("小窗预览", "Preview") : tab.displayName(t: t))
                     .font(.system(size: 14, weight: isSelected ? .medium : .regular))
                     .foregroundColor(isSelected ? .white : .primary)
                 
