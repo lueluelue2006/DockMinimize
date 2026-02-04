@@ -143,38 +143,43 @@ class PreviewBarController: NSObject {
 
         let dockGap: CGFloat = 12
         let edgeMargin: CGFloat = 8
-        let reserved = dockThickness(on: screen, orientation: orientation) + dockGap
 
         let screenFrame = screen.frame
-        var adjusted = frame
+        let reserved = dockThickness(on: screen, orientation: orientation) + dockGap
+
+        // Start from visibleFrame (already avoids the Dock + menu bar when Dock is not auto-hidden),
+        // then reserve additional space on the Dock side (also covers auto-hidden Dock via fallback thickness).
+        var safe = screen.visibleFrame.insetBy(dx: edgeMargin, dy: edgeMargin)
+        let safeMaxX = safe.maxX
+        let safeMaxY = safe.maxY
 
         switch orientation {
         case .right:
-            let maxAllowedMaxX = screenFrame.maxX - reserved
-            if adjusted.maxX > maxAllowedMaxX {
-                adjusted.origin.x -= (adjusted.maxX - maxAllowedMaxX)
-            }
+            let newMaxX = min(safeMaxX, screenFrame.maxX - reserved)
+            safe.size.width = max(0, newMaxX - safe.minX)
         case .left:
-            let minAllowedMinX = screenFrame.minX + reserved
-            if adjusted.minX < minAllowedMinX {
-                adjusted.origin.x += (minAllowedMinX - adjusted.minX)
-            }
+            let newMinX = max(safe.minX, screenFrame.minX + reserved)
+            safe.origin.x = newMinX
+            safe.size.width = max(0, safeMaxX - newMinX)
         case .bottom:
-            let minAllowedMinY = screenFrame.minY + reserved
-            if adjusted.minY < minAllowedMinY {
-                adjusted.origin.y += (minAllowedMinY - adjusted.minY)
-            }
+            let newMinY = max(safe.minY, screenFrame.minY + reserved)
+            safe.origin.y = newMinY
+            safe.size.height = max(0, safeMaxY - newMinY)
         }
 
-        // Final clamp (avoid going out of screen due to docking adjustments).
-        adjusted.origin.x = min(
-            max(adjusted.origin.x, screenFrame.minX + edgeMargin),
-            screenFrame.maxX - adjusted.width - edgeMargin
-        )
-        adjusted.origin.y = min(
-            max(adjusted.origin.y, screenFrame.minY + edgeMargin),
-            screenFrame.maxY - adjusted.height - edgeMargin
-        )
+        // If the preview is too large to fit without covering the Dock, shrink (clip/scale) it.
+        // This handles huge overlay-style windows that nearly span the whole display.
+        var adjusted = frame
+        if safe.width > 1, adjusted.width > safe.width { adjusted.size.width = safe.width }
+        if safe.height > 1, adjusted.height > safe.height { adjusted.size.height = safe.height }
+
+        // Clamp origin to safe area.
+        if safe.width > 1 {
+            adjusted.origin.x = min(max(adjusted.origin.x, safe.minX), safe.maxX - adjusted.width)
+        }
+        if safe.height > 1 {
+            adjusted.origin.y = min(max(adjusted.origin.y, safe.minY), safe.maxY - adjusted.height)
+        }
 
         return adjusted
     }
@@ -715,7 +720,7 @@ extension PreviewBarController: PreviewStateManagerDelegate {
         let originalTargetFrame = targetFrame
 
         // Nudge away from Dock so the preview doesn't visually cover the Dock bar.
-        // Especially important when Dock is auto-hidden and can pop over windows.
+        // Especially important for huge overlay-style windows that can span edge-to-edge.
         targetFrame = adjustedFrameToLeaveSpaceForDock(targetFrame, on: screen)
         
         // 复用或创建窗口
@@ -745,7 +750,7 @@ extension PreviewBarController: PreviewStateManagerDelegate {
         // SwiftUI 的容器在处理出界 Frame 时会有难以预料的居中行为，底层 NSImageView 更可控。
         let imageView = NSImageView(frame: NSRect(origin: .zero, size: targetFrame.size))
         imageView.image = displayImage
-        imageView.imageScaling = .scaleNone // 禁止任何缩放，保持 1:1
+        imageView.imageScaling = (targetFrame.size == originalTargetFrame.size) ? .scaleNone : .scaleProportionallyDown
         
         // 计算对齐方式
         if originalTargetFrame.origin.x < 0 {
