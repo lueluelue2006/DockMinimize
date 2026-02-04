@@ -556,26 +556,34 @@ extension PreviewBarController: PreviewStateManagerDelegate {
         }
         
         // 获取 Frame
-        // 这里有个小难点：getWindows 需要 bundleId。
-        // 我们稍微 hack 一下：State Manager 有 currentAppBundleId
-        // 使用原位预览必须能找到 bounds
         var foundBounds = false
         if let bundleId = stateManager.currentAppBundleId,
            let info = service.getWindows(for: bundleId).first(where: { $0.windowId == windowId }) {
             targetFrame = info.bounds
-            // 坐标转换：CG (左上) -> AppKit (左下)
-            let appKitY = screenFrame.height - targetFrame.origin.y - targetFrame.height
+            
+            // ⭐️ 核心修正：使用主屏幕（Index 0）的高度作为坐标翻转基准，确保在任何屏幕上行为一致
+            let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? 1080
+            let appKitY = primaryScreenHeight - targetFrame.origin.y - targetFrame.height
+            
+            log.log("📐 Original Bounds (CG): \(targetFrame)")
             targetFrame.origin.y = appKitY
+            log.log("📐 Final Frame (AppKit): \(targetFrame) on Primary Height: \(primaryScreenHeight)")
             
             finalTitle = info.title
             foundBounds = true
         }
         
         // 如果找不到 Bounds，无法原位预览，直接放弃
-        guard foundBounds else { return }
+        guard foundBounds else { 
+            log.log("⚠️ Could not find bounds for window \(windowId), aborting original preview")
+            return 
+        }
         
         // 如果没有图像，无法显示
-        guard let displayImage = finalImage else { return }
+        guard let displayImage = finalImage else { 
+            log.log("⚠️ No image captured for window \(windowId)")
+            return 
+        }
         
         // 复用或创建窗口
         let window: NSWindow
@@ -583,7 +591,7 @@ extension PreviewBarController: PreviewStateManagerDelegate {
             window = existing
         } else {
             window = NSWindow(
-                contentRect: .zero, // 稍后设置
+                contentRect: .zero,
                 styleMask: [.borderless],
                 backing: .buffered,
                 defer: false
@@ -596,21 +604,32 @@ extension PreviewBarController: PreviewStateManagerDelegate {
         }
         
         // 设置 Frame 和 Level
+        log.log("📐 Setting Large Preview frame: \(targetFrame)")
         window.setFrame(targetFrame, display: true)
-        // 原位预览：恢复高层级，确保在其他窗口之上
-        // 用户反馈：之前 .normal 会被遮挡，.popUpMenu 又遮挡了小窗。
-        // 修正：使用 .floating (NSWindow.Level(3))，位于 .normal(0) 之上，.popUpMenu(101) 之下
         window.level = .floating
 
+        // ⭐️ 核心修正：改用原生 NSImageView 以获得像素级的对齐支持
+        // SwiftUI 的容器在处理出界 Frame 时会有难以预料的居中行为，底层 NSImageView 更可控。
+        let imageView = NSImageView(frame: NSRect(origin: .zero, size: targetFrame.size))
+        imageView.image = displayImage
+        imageView.imageScaling = .scaleNone // 禁止任何缩放，保持 1:1
         
-        // 更新 ContentView
-        window.contentView = NSHostingView(rootView: LargePreviewView(
-            image: displayImage,
-            title: finalTitle,
-            icon: finalIcon,
-            isLowRes: isLowRes,
-            forceOriginalMode: true // 告诉 View 不需要背景模糊遮罩
-        ))
+        // 计算对齐方式
+        if targetFrame.origin.x < 0 {
+            // 窗口左侧出界：截图只有右半部 -> 内容右对齐
+            imageView.imageAlignment = .alignTopRight
+            log.log("📐 Alignment: .alignTopRight (Window left out)")
+        } else {
+            // 正常 或 窗口右侧出界：截图从左侧起算 -> 内容左对齐
+            imageView.imageAlignment = .alignTopLeft
+            log.log("📐 Alignment: .alignTopLeft (Window normal or right out)")
+        }
+        
+        // 垂直方向统一置顶（因为我们的 Frame 已经 flip 过了）
+        // 如果是 imageAlignRight，会自动组合成右上对齐
+        
+        window.contentView = imageView
+        log.log("🖼 Image size (Point): \(displayImage.size) set to Content View")
         
         if !window.isVisible {
             window.alphaValue = 0

@@ -14,6 +14,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var previewBarController: PreviewBarController?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        print("🚀 DockMinimize Version: ALIGNMENT_FIX_V2_DEPLOYED")
         // 初始化菜单栏控制器
         menuBarController = MenuBarController()
         

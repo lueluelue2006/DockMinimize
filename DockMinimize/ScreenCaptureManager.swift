@@ -76,13 +76,15 @@ class ScreenCaptureManager {
             }
         }
     }
-    
     /// 截取指定窗口的图像
     func captureWindow(windowId: CGWindowID, bounds: CGRect) -> NSImage? {
         guard hasScreenCapturePermission() else {
             log.log("❌ Cannot capture window: no permission")
             return nil
         }
+        
+        // 获取当前屏幕缩放系数
+        let scale = NSScreen.main?.backingScaleFactor ?? 1.0
         
         // 使用 CGWindowListCreateImage 截取指定窗口
         guard let cgImage = CGWindowListCreateImage(
@@ -95,7 +97,8 @@ class ScreenCaptureManager {
             return nil
         }
         
-        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        let size = NSSize(width: CGFloat(cgImage.width) / scale, height: CGFloat(cgImage.height) / scale)
+        return NSImage(cgImage: cgImage, size: size)
     }
     
     /// 截取指定窗口（使用私有 API，支持最小化窗口）
@@ -110,6 +113,9 @@ class ScreenCaptureManager {
         let connectionID = CGSMainConnectionID()
         var id = UInt32(windowId)
         
+        // 获取当前屏幕缩放系数，用于将像素转换为 Point
+        let scale = NSScreen.main?.backingScaleFactor ?? 1.0
+        
         // 第一次尝试：最佳分辨率
         if let capturedWindows = CGSHWCaptureWindowList(
             connectionID,
@@ -118,8 +124,8 @@ class ScreenCaptureManager {
             [.ignoreGlobalClipShape, .bestResolution]
         ) as? [CGImage],
            let cgImage = capturedWindows.first {
-            // log.log("✅ Captured window \(windowId) using CGSHWCaptureWindowList (best)")
-            return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+            let size = NSSize(width: CGFloat(cgImage.width) / scale, height: CGFloat(cgImage.height) / scale)
+            return NSImage(cgImage: cgImage, size: size)
         }
         
         // 第二次尝试：名义分辨率（有时对某些状态的窗口更有效）
@@ -130,8 +136,8 @@ class ScreenCaptureManager {
             [.ignoreGlobalClipShape, .nominalResolution]
         ) as? [CGImage],
            let cgImage = capturedWindows.first {
-            log.log("✅ Captured window \(windowId) using CGSHWCaptureWindowList (nominal)")
-            return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+            let size = NSSize(width: CGFloat(cgImage.width) / scale, height: CGFloat(cgImage.height) / scale)
+            return NSImage(cgImage: cgImage, size: size)
         }
         
         // 第三次尝试：仅忽略裁剪（最基础的私有 API 调用）
@@ -142,12 +148,12 @@ class ScreenCaptureManager {
             [.ignoreGlobalClipShape]
         ) as? [CGImage],
            let cgImage = capturedWindows.first {
-            log.log("✅ Captured window \(windowId) using CGSHWCaptureWindowList (ignoreClip)")
-            return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+            let size = NSSize(width: CGFloat(cgImage.width) / scale, height: CGFloat(cgImage.height) / scale)
+            return NSImage(cgImage: cgImage, size: size)
         }
         
         // 备选方案：使用公共 API
-        log.log("⚠️ Fallback to CGWindowListCreateImage for window \(windowId)")
+        log.log("⚠️ Fallback to CGWindowListCreateImage for window \(windowId) (Scale: \(scale))")
         if let windowInfo = getWindowInfo(windowId: windowId) {
             return captureWindow(windowId: windowId, bounds: windowInfo.bounds)
         }

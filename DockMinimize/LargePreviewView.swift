@@ -18,16 +18,16 @@ struct LargePreviewView: View {
     // ⭐️ 强制原位模式：无背景、无标题、纯图片
     var forceOriginalMode: Bool = false
     
+    // 对齐方式：用于处理出界窗口的残缺截图（避免居中偏移）
+    var alignment: Alignment = .center
+    
     var body: some View {
         if forceOriginalMode {
             // 原位模式：极简渲染
             Image(nsImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fit) // 保持比例填充 Window (Window Frame 已设置为 exact bounds)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // 原位模式不需要额外的圆角裁剪，因为系统截图已经包含了窗口圆角（或透明区域）
-                // 也不需要太重的阴影，因为截图里可能自带了系统阴影
-                // 加一点点阴影防止截图里的阴影被裁减或者不明显
+                // 不使用 resizable()，以保持图片的原始 Point 尺寸 (1:1)
+                // 配合正确的 alignment 确保残缺截图能对齐到窗口的对应边缘
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
                 .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 5)
         } else {
             // 默认模式：居中大图 + 背景遮罩 + 标题栏
