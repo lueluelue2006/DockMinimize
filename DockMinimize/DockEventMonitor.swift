@@ -7,6 +7,7 @@
 
 import Cocoa
 import ApplicationServices
+import os.lock
 
 // --- 嵌入式 Dock 图标缓存管理器 ---
 class DockIconCacheManager {
@@ -23,119 +24,229 @@ class DockIconCacheManager {
         let bundleId: String
     }
     
-    private(set) var cachedIcons: [DockIconInfo] = []
-    private var dockOrientation: DockOrientation = .bottom
-    private var lastUpdate: TimeInterval = 0
-    private let queue = DispatchQueue(label: "com.dockminimize.dockcache", qos: .background)
+    // Thread-safe snapshots (read by event taps / monitors from non-main threads).
+    private var lock = os_unfair_lock_s()
+    private var cachedIconsStorage: [DockIconInfo] = []
+    private var dockOrientationStorage: DockOrientation = .bottom
+    private var lastUpdateStorage: TimeInterval = 0
+
+    var cachedIcons: [DockIconInfo] {
+        snapshot().icons
+    }
+
+    private func snapshot() -> (icons: [DockIconInfo], orientation: DockOrientation, lastUpdate: TimeInterval) {
+        os_unfair_lock_lock(&lock)
+        let icons = cachedIconsStorage
+        let orientation = dockOrientationStorage
+        let lastUpdate = lastUpdateStorage
+        os_unfair_lock_unlock(&lock)
+        return (icons, orientation, lastUpdate)
+    }
+
+    private func updateSnapshot(icons: [DockIconInfo], orientation: DockOrientation, updatedAt: TimeInterval) {
+        os_unfair_lock_lock(&lock)
+        cachedIconsStorage = icons
+        dockOrientationStorage = orientation
+        lastUpdateStorage = updatedAt
+        os_unfair_lock_unlock(&lock)
+    }
+
+    private let queue = DispatchQueue(label: "com.dockminimize.dockcache", qos: .utility)
+    private var timer: DispatchSourceTimer?
+    private let minUpdateInterval: TimeInterval = 5.0
+    private let periodicUpdateInterval: TimeInterval = 15.0
+    private var lastAttempt: TimeInterval = 0
     private var isUpdating = false
+    private var observers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
     
     private init() {
-        startAutoUpdate()
+        installObservers()
+        startPeriodicUpdates()
+        requestUpdate(force: true, reason: "startup")
     }
     
-    private func startAutoUpdate() {
-        // 降低频率，降低系统压力
-        queue.async { [weak self] in
-            while true {
-                autoreleasepool {
-                    self?.updateCache()
-                }
-                Thread.sleep(forTimeInterval: 3.0) 
-            }
+    deinit {
+        timer?.cancel()
+        timer = nil
+        for obs in observers {
+            NotificationCenter.default.removeObserver(obs)
+        }
+        for obs in workspaceObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(obs)
         }
     }
     
-    func updateCache() {
+    private func installObservers() {
+        // Screen/workspace changes can move Dock icons; update on these to reduce polling pressure.
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didChangeScreenParametersNotification,
+                object: nil,
+                queue: nil
+            ) { [weak self] _ in
+                self?.requestUpdate(force: true, reason: "screen-params")
+            }
+        )
+
+        let ws = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(
+            ws.addObserver(
+                forName: NSWorkspace.didLaunchApplicationNotification,
+                object: nil,
+                queue: nil
+            ) { [weak self] note in
+                let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                let reason = (app?.bundleIdentifier == "com.apple.dock") ? "dock-launch" : "app-launch"
+                self?.requestUpdate(force: app?.bundleIdentifier == "com.apple.dock", reason: reason)
+            }
+        )
+        workspaceObservers.append(
+            ws.addObserver(
+                forName: NSWorkspace.didTerminateApplicationNotification,
+                object: nil,
+                queue: nil
+            ) { [weak self] note in
+                let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                let reason = (app?.bundleIdentifier == "com.apple.dock") ? "dock-terminate" : "app-terminate"
+                self?.requestUpdate(force: app?.bundleIdentifier == "com.apple.dock", reason: reason)
+            }
+        )
+    }
+
+    private func startPeriodicUpdates() {
+        timer?.cancel()
+
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 0.2, repeating: periodicUpdateInterval, leeway: .seconds(2))
+        t.setEventHandler { [weak self] in
+            self?.updateCacheIfNeeded(force: false, reason: "periodic")
+        }
+        t.resume()
+        timer = t
+    }
+
+    func requestUpdate(force: Bool = false, reason: String) {
+        queue.async { [weak self] in
+            self?.updateCacheIfNeeded(force: force, reason: reason)
+        }
+    }
+
+    private func updateCacheIfNeeded(force: Bool, reason: String) {
+        let now = Date().timeIntervalSince1970
+        let state = snapshot()
+
+        if !force, now - state.lastUpdate < minUpdateInterval { return }
+        // Avoid bursty updates when multiple notifications arrive together.
+        if !force, now - lastAttempt < 1.0 { return }
+
+        lastAttempt = now
+        updateCache(reason: reason)
+    }
+
+    func updateCache(reason: String = "unknown") {
         guard !isUpdating else { return }
         isUpdating = true
         defer { isUpdating = false }
 
-        let orientationValue = (UserDefaults(suiteName: "com.apple.dock")?.string(forKey: "orientation") ?? "bottom").lowercased()
-        let orientation = DockOrientation(rawValue: orientationValue) ?? .bottom
-        
-        // --- 核心改动：所有的系统调用都在后台线程 ---
-        guard let dockApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return }
-        let dockElement = AXUIElementCreateApplication(dockApp.processIdentifier)
-        
-        var childrenRef: CFTypeRef?
-        // 如果这里卡住，也只是后台线程卡住，不会卡死 UI
-        guard AXUIElementCopyAttributeValue(dockElement, kAXChildrenAttribute as CFString, &childrenRef) == .success,
-              let children = childrenRef as? [AXUIElement] else { return }
-        
-        var newIcons: [DockIconInfo] = []
-        for child in children {
-            var roleRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &roleRef)
-            if let role = roleRef as? String, role == "AXList" {
-                var listChildrenRef: CFTypeRef?
-                if AXUIElementCopyAttributeValue(child, kAXChildrenAttribute as CFString, &listChildrenRef) == .success,
-                   let listChildren = listChildrenRef as? [AXUIElement] {
-                    for iconElement in listChildren {
-                        var positionRef: CFTypeRef?
-                        var sizeRef: CFTypeRef?
-                        if AXUIElementCopyAttributeValue(iconElement, kAXPositionAttribute as CFString, &positionRef) == .success,
-                           AXUIElementCopyAttributeValue(iconElement, kAXSizeAttribute as CFString, &sizeRef) == .success {
-                            var position = CGPoint.zero
-                            var size = CGSize.zero
-                            AXValueGetValue(positionRef as! AXValue, .cgPoint, &position)
-                            AXValueGetValue(sizeRef as! AXValue, .cgSize, &size)
-                            
-                            var bundleId: String? = nil
-                            
-                            // 1. 优先尝试直接从 AXUIElement 获取标识符 (最快最安全，不触碰文件系统)
-                            var bidRef: CFTypeRef?
-                            if AXUIElementCopyAttributeValue(iconElement, "AXBundleIdentifier" as CFString, &bidRef) == .success,
-                               let bid = bidRef as? String {
-                                bundleId = bid
-                            }
-                            
-                            // 2. 如果失败，尝试通过 URL 获取，但要避开敏感路径
-                            if bundleId == nil {
-                                var urlRef: CFTypeRef?
-                                if AXUIElementCopyAttributeValue(iconElement, "AXURL" as CFString, &urlRef) == .success,
-                                   let url = urlRef as? URL {
-                                    
-                                    // 检查是否在“下载”文件夹中 (避雷针)
-                                    let downloadsPath = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path ?? "/Downloads/"
-                                    let isSensitive = url.path.contains(downloadsPath) || url.path.contains("/Downloads/")
-                                    
-                                    if isSensitive {
-                                        // 敏感路径：仅匹配运行中的应用，绝不调用 Bundle(path:)
-                                        bundleId = NSWorkspace.shared.runningApplications.first(where: { 
-                                            $0.bundleURL?.path == url.path || $0.executableURL?.path == url.path 
-                                        })?.bundleIdentifier
-                                    } else {
-                                        // 安全路径：可以使用 Bundle(path:)
-                                        bundleId = Bundle(path: url.path)?.bundleIdentifier
+        let startedAt = DispatchTime.now()
+        defer {
+            let elapsed = Double(DispatchTime.now().uptimeNanoseconds - startedAt.uptimeNanoseconds) / 1_000_000_000
+            if elapsed > 0.25 {
+                DebugLogger.shared.log(String(format: "Dock cache update (%@) took %.3fs", reason, elapsed))
+            }
+        }
+
+        autoreleasepool {
+            let orientationValue = (UserDefaults(suiteName: "com.apple.dock")?.string(forKey: "orientation") ?? "bottom").lowercased()
+            let orientation = DockOrientation(rawValue: orientationValue) ?? .bottom
+            
+            // --- 核心：所有系统调用都在后台线程，避免卡住 UI ---
+            guard let dockApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return }
+            let dockElement = AXUIElementCreateApplication(dockApp.processIdentifier)
+            
+            var childrenRef: CFTypeRef?
+            // 如果这里卡住，也只是后台线程卡住，不会卡死 UI
+            guard AXUIElementCopyAttributeValue(dockElement, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+                  let children = childrenRef as? [AXUIElement] else { return }
+            
+            var newIcons: [DockIconInfo] = []
+            let blacklisted = Set(UserDefaults.standard.stringArray(forKey: "blacklistedBundleIDs") ?? [])
+            let downloadsPath = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path ?? "/Downloads/"
+
+            for child in children {
+                var roleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &roleRef)
+                if let role = roleRef as? String, role == "AXList" {
+                    var listChildrenRef: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(child, kAXChildrenAttribute as CFString, &listChildrenRef) == .success,
+                       let listChildren = listChildrenRef as? [AXUIElement] {
+                        for iconElement in listChildren {
+                            var positionRef: CFTypeRef?
+                            var sizeRef: CFTypeRef?
+                            if AXUIElementCopyAttributeValue(iconElement, kAXPositionAttribute as CFString, &positionRef) == .success,
+                               AXUIElementCopyAttributeValue(iconElement, kAXSizeAttribute as CFString, &sizeRef) == .success {
+                                var position = CGPoint.zero
+                                var size = CGSize.zero
+                                AXValueGetValue(positionRef as! AXValue, .cgPoint, &position)
+                                AXValueGetValue(sizeRef as! AXValue, .cgSize, &size)
+                                
+                                var bundleId: String? = nil
+                                
+                                // 1. 优先尝试直接从 AXUIElement 获取标识符 (最快最安全，不触碰文件系统)
+                                var bidRef: CFTypeRef?
+                                if AXUIElementCopyAttributeValue(iconElement, "AXBundleIdentifier" as CFString, &bidRef) == .success,
+                                   let bid = bidRef as? String {
+                                    bundleId = bid
+                                }
+                                
+                                // 2. 如果失败，尝试通过 URL 获取，但要避开敏感路径
+                                if bundleId == nil {
+                                    var urlRef: CFTypeRef?
+                                    if AXUIElementCopyAttributeValue(iconElement, "AXURL" as CFString, &urlRef) == .success,
+                                       let url = urlRef as? URL {
+                                        
+                                        // 检查是否在“下载”文件夹中 (避雷针)
+                                        let isSensitive = url.path.contains(downloadsPath) || url.path.contains("/Downloads/")
+                                        
+                                        if isSensitive {
+                                            // 敏感路径：仅匹配运行中的应用，绝不调用 Bundle(path:)
+                                            bundleId = NSWorkspace.shared.runningApplications.first(where: {
+                                                $0.bundleURL?.path == url.path || $0.executableURL?.path == url.path
+                                            })?.bundleIdentifier
+                                        } else {
+                                            // 安全路径：可以使用 Bundle(path:)
+                                            bundleId = Bundle(path: url.path)?.bundleIdentifier
+                                        }
                                     }
                                 }
-                            }
-                            
-                            if let bid = bundleId {
-                                // 检查黑名单，如果是黑名单软件，则不将其加入缩略图缓存，彻底不碰它
-                                if !SettingsManager.shared.blacklistedBundleIDs.contains(bid) {
-                                    newIcons.append(DockIconInfo(frame: CGRect(origin: position, size: size), bundleId: bid))
+                                
+                                if let bid = bundleId {
+                                    // 检查黑名单，如果是黑名单软件，则不将其加入缩略图缓存，彻底不碰它
+                                    if !blacklisted.contains(bid) {
+                                        newIcons.append(DockIconInfo(frame: CGRect(origin: position, size: size), bundleId: bid))
+                                    }
                                 }
                             }
                         }
                     }
+                    // Dock usually exposes a single AXList containing tiles; avoid scanning other children.
+                    break
                 }
             }
-        }
-        
-        DispatchQueue.main.async {
-            self.cachedIcons = newIcons
-            self.dockOrientation = orientation
+            
+            updateSnapshot(icons: newIcons, orientation: orientation, updatedAt: Date().timeIntervalSince1970)
         }
     }
 
     func getBundleId(at point: CGPoint) -> String? {
         // 纯内存操作，绝对安全（不做任何同步 AX/Workspace 调用）
-        let orientation = dockOrientation
+        let state = snapshot()
+        let orientation = state.orientation
         var bestBundleId: String?
         var bestScore: CGFloat = .greatestFiniteMagnitude
 
-        for icon in cachedIcons {
+        for icon in state.icons {
             let originalFrame = icon.frame
             var hitFrame = originalFrame
 

@@ -23,6 +23,8 @@ class HoverEventMonitor {
     private var hoverTimer: DispatchWorkItem?
     private var lastHoveredApp: String?
     private var lastMousePosition: CGPoint = .zero
+    private var pendingMouseLocation: CGPoint = .zero
+    private var mouseProcessingWorkItem: DispatchWorkItem?
     
     var previewBarFrame: CGRect = .zero
     var isPreviewBarVisible: Bool = false
@@ -51,7 +53,7 @@ class HoverEventMonitor {
                     return Unmanaged.passUnretained(event)
                 }
 
-                monitor.handleMouseMoved(event: event)
+                monitor.enqueueMouseMoved(location: event.location)
                 return Unmanaged.passUnretained(event)
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
@@ -89,88 +91,88 @@ class HoverEventMonitor {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: true)
         } else {
-            start()
+            DispatchQueue.main.async { [weak self] in
+                self?.start()
+            }
         }
     }
     
     /// 最后一次触发悬停的时间（用于防抖）
     private var lastHoverTriggerTime: Date = Date.distantPast
 
-    private func handleMouseMoved(event: CGEvent) {
-        let location = event.location
+    private func enqueueMouseMoved(location: CGPoint) {
+        // Event-tap callback must return ASAP (system-wide input path).
+        // We coalesce high-frequency mouse-move events and process only the latest on the main thread.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.pendingMouseLocation = location
+
+            if self.mouseProcessingWorkItem != nil { return }
+
+            let item = DispatchWorkItem { [weak self] in
+                guard let self = self else { return }
+                self.mouseProcessingWorkItem = nil
+                self.handleMouseMovedOnMain(location: self.pendingMouseLocation)
+            }
+            self.mouseProcessingWorkItem = item
+            DispatchQueue.main.async(execute: item)
+        }
+    }
+
+    private func handleMouseMovedOnMain(location: CGPoint) {
         lastMousePosition = location
         
         // ⭐️ 终极修复：交互冷冻锁定 (Frozen Lock)
         // 如果系统正在搬运窗口（还原/最小化程序动画中），彻底忽略所有鼠标移动。
-        // 这能保证在 5-10 秒的长动画过程中，代码不会去尝试刷新或销毁正在使用的数据，彻底杜绝崩溃。
         if WindowManager.shared.isTransitioning {
             return
         }
         
-        // 2. --- 核心：10毫秒超时保险箱 ---
-        let semaphore = DispatchSemaphore(value: 0)
-        
-        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-            guard let self = self else { 
-                semaphore.signal()
-                return 
+        // A. 如果预览条正在显示
+        if isPreviewBarVisible && !previewBarFrame.isEmpty {
+            // 如果鼠标在预览条内，维持现状
+            if previewBarFrame.contains(location) {
+                delegate?.hoverEventMonitor(self, didMoveInPreviewBar: location)
+                return
             }
             
-            do {
-                // A. 如果预览条正在显示
-                if self.isPreviewBarVisible && !self.previewBarFrame.isEmpty {
-                    // 如果鼠标在预览条内，维持现状
-                    if self.previewBarFrame.contains(location) {
-                        DispatchQueue.main.async { self.delegate?.hoverEventMonitor(self, didMoveInPreviewBar: location) }
-                        semaphore.signal()
-                        return
-                    }
-                    
-                    // ⭐️ 核心改进：精确的“上升走廊”锁定
-                    let screenHeight = NSScreen.main?.frame.height ?? 800
-                    
-                    // 仅当鼠标处于当前图标正上方窄幅区域（±40px）时锁定，防误触的同时允许横移切换
-                    if let iconPos = self.getDockIconPosition(for: self.lastHoveredApp ?? "") {
-                        let lockWidth: CGFloat = 40
-                        let isWithinCorridor = location.x > (iconPos.x - lockWidth) && 
-                                             location.x < (iconPos.x + lockWidth)
-                        
-                        if isWithinCorridor && location.y < (screenHeight - 45) && location.y > (screenHeight - 200) {
-                            semaphore.signal()
-                            return
-                        }
-                    }
-                }
+            // ⭐️ 核心改进：精确的“上升走廊”锁定
+            let screenHeight = NSScreen.main?.frame.height ?? 800
+            
+            // 仅当鼠标处于当前图标正上方窄幅区域（±40px）时锁定，防误触的同时允许横移切换
+            if let iconPos = getDockIconPosition(for: lastHoveredApp ?? "") {
+                let lockWidth: CGFloat = 40
+                let isWithinCorridor = location.x > (iconPos.x - lockWidth) &&
+                location.x < (iconPos.x + lockWidth)
                 
-                // ⭐️ 命中测试：是否悬停在 Dock 图标上（纯内存操作）。
-                // 旧版本用“屏幕底部 100px”判定 Dock 区域，Dock 在左/右侧或在副屏时会导致悬停预览完全失效。
-                if let bundleId = DockIconCacheManager.shared.getBundleId(at: location) {
-                    if bundleId != self.lastHoveredApp {
-                        // ⭐️ 切换冷却（90ms），防止快速滑过时预览条“乱跳”
-                        let now = Date()
-                        if now.timeIntervalSince(self.lastHoverTriggerTime) < self.hoverSwitchCooldown {
-                            semaphore.signal()
-                            return
-                        }
-                        
-                        self.cancelHoverTimer()
-                        self.startHoverTimer(for: bundleId, at: location)
-                        self.lastHoverTriggerTime = now
-                    }
-                } else {
-                    self.cancelHoverTimer()
-                    if self.lastHoveredApp != nil {
-                        self.lastHoveredApp = nil
-                        DispatchQueue.main.async { self.delegate?.hoverEventMonitorDidExitDock(self) }
-                    }
-                    semaphore.signal()
+                if isWithinCorridor && location.y < (screenHeight - 45) && location.y > (screenHeight - 200) {
                     return
                 }
             }
-            semaphore.signal()
         }
         
-        _ = semaphore.wait(timeout: .now() + 0.01)
+        // ⭐️ 命中测试：是否悬停在 Dock 图标上（纯内存操作）。
+        // 旧版本用“屏幕底部 100px”判定 Dock 区域，Dock 在左/右侧或在副屏时会导致悬停预览完全失效。
+        if let bundleId = DockIconCacheManager.shared.getBundleId(at: location) {
+            if bundleId != lastHoveredApp {
+                // ⭐️ 切换冷却（90ms），防止快速滑过时预览条“乱跳”
+                let now = Date()
+                if now.timeIntervalSince(lastHoverTriggerTime) < hoverSwitchCooldown {
+                    return
+                }
+                
+                cancelHoverTimer()
+                startHoverTimer(for: bundleId, at: location)
+                lastHoverTriggerTime = now
+            }
+        } else {
+            cancelHoverTimer()
+            if lastHoveredApp != nil {
+                lastHoveredApp = nil
+                delegate?.hoverEventMonitorDidExitDock(self)
+            }
+            return
+        }
     }
     
     private func startHoverTimer(for bundleId: String, at position: CGPoint) {
