@@ -31,6 +31,10 @@ class MenuBarController: NSObject {
             object: nil
         )
     }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
     
     private func setupStatusItem() {
         guard let button = statusItem?.button else { return }

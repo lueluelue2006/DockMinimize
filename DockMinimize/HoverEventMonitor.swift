@@ -27,10 +27,13 @@ class HoverEventMonitor {
     var previewBarFrame: CGRect = .zero
     var isPreviewBarVisible: Bool = false
     private let hoverDelay: TimeInterval = 0.02 // 降低延迟实现丝滑响应
+    private let hoverSwitchCooldown: TimeInterval = 0.09 // 防止快速滑过时预览条“乱跳”
     
     private let log = DebugLogger.shared
     
     func start() {
+        guard eventTap == nil else { return }
+
         let eventMask = (1 << CGEventType.mouseMoved.rawValue)
         guard let tap = CGEvent.tapCreate(
             tap: .cghidEventTap,
@@ -38,10 +41,18 @@ class HoverEventMonitor {
             options: .listenOnly,
             eventsOfInterest: CGEventMask(eventMask),
             callback: { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
-                guard let refcon = refcon else { return Unmanaged.passRetained(event) }
+                guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
                 let monitor = Unmanaged<HoverEventMonitor>.fromOpaque(refcon).takeUnretainedValue()
+                // event tap 被系统禁用时（timeout/userInput），这里会收到对应的 type。
+                // 之前代码里有 `exit(0)`，会让用户觉得“软件突然自动退出”。
+                // 改为：尝试重新启用 tap，并放通事件。
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    monitor.handleTapDisabled(type: type, event: event)
+                    return Unmanaged.passUnretained(event)
+                }
+
                 monitor.handleMouseMoved(event: event)
-                return Unmanaged.passRetained(event)
+                return Unmanaged.passUnretained(event)
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else { return }
@@ -55,10 +66,31 @@ class HoverEventMonitor {
     func stop() {
         hoverTimer?.cancel()
         hoverTimer = nil
-        if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: false) }
-        if let source = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes) }
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+        }
+        if let source = runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+            CFRunLoopSourceInvalidate(source)
+        }
         eventTap = nil
         runLoopSource = nil
+    }
+
+    deinit {
+        stop()
+    }
+    
+    private func handleTapDisabled(type: CGEventType, event: CGEvent) {
+        let reason = (type == .tapDisabledByTimeout) ? "timeout" : "userInput"
+        log.log("Hover event tap disabled (\(reason)); attempting to re-enable.")
+
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: true)
+        } else {
+            start()
+        }
     }
     
     /// 最后一次触发悬停的时间（用于防抖）
@@ -67,11 +99,6 @@ class HoverEventMonitor {
     private func handleMouseMoved(event: CGEvent) {
         let location = event.location
         lastMousePosition = location
-        
-        // 1. 系统禁用检查
-        if event.type == .tapDisabledByTimeout || event.type == .tapDisabledByUserInput {
-            exit(0)
-        }
         
         // ⭐️ 终极修复：交互冷冻锁定 (Frozen Lock)
         // 如果系统正在搬运窗口（还原/最小化程序动画中），彻底忽略所有鼠标移动。
@@ -119,9 +146,9 @@ class HoverEventMonitor {
                 // 旧版本用“屏幕底部 100px”判定 Dock 区域，Dock 在左/右侧或在副屏时会导致悬停预览完全失效。
                 if let bundleId = DockIconCacheManager.shared.getBundleId(at: location) {
                     if bundleId != self.lastHoveredApp {
-                        // ⭐️ 增加切换冷却（150ms），防止快速滑过时预览条“乱跳”
+                        // ⭐️ 切换冷却（90ms），防止快速滑过时预览条“乱跳”
                         let now = Date()
-                        if now.timeIntervalSince(self.lastHoverTriggerTime) < 0.15 {
+                        if now.timeIntervalSince(self.lastHoverTriggerTime) < self.hoverSwitchCooldown {
                             semaphore.signal()
                             return
                         }

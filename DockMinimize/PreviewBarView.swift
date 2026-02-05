@@ -125,6 +125,11 @@ struct ScrollGestureHandler: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             if let window = self.window {
+                if let monitor = monitor {
+                    NSEvent.removeMonitor(monitor)
+                    self.monitor = nil
+                }
+
                 // ⭐️ 使用 Local Monitor 在本窗口范围内全局捕捉滚轮
                 // 这样我们可以让 hitTest 返回 nil（透传点击），但依然能“闻到”滚轮事件
                 monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel]) { [weak self] event in
@@ -144,6 +149,12 @@ struct ScrollGestureHandler: NSViewRepresentable {
                     NSEvent.removeMonitor(monitor)
                     self.monitor = nil
                 }
+            }
+        }
+
+        deinit {
+            if let monitor = monitor {
+                NSEvent.removeMonitor(monitor)
             }
         }
 
@@ -265,6 +276,15 @@ class PreviewBarViewModel: ObservableObject {
         
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+
+            self.thumbnails.removeValue(forKey: windowId)
+            self.bumpTriggers.removeValue(forKey: windowId)
+            self.activeWindowIds.remove(windowId)
+            if self.hoveredWindowId == windowId {
+                self.hoveredWindowId = nil
+            }
+            self.thumbnailService.invalidateCache(for: windowId)
+
             // 从列表中移除关闭的窗口
             if let index = self.windows.firstIndex(where: { $0.windowId == windowId }) {
                 self.log.log("🗑️ UI Sync: Window \(windowId) closed, removing from list")

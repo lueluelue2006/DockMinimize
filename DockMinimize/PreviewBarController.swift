@@ -14,6 +14,8 @@ class PreviewBarController: NSObject {
     
     private let log = DebugLogger.shared
     private var cancellables = Set<AnyCancellable>()
+    private var forceHideObserver: NSObjectProtocol?
+    private var globalClickMonitor: Any?
 
     private enum DockOrientation: String {
         case bottom
@@ -56,34 +58,57 @@ class PreviewBarController: NSObject {
         
         hoverMonitor.delegate = self
         stateManager.delegate = self
-        
-        // 监听强制关闭通知（处理 Dock 右键点击）
-        NotificationCenter.default.addObserver(forName: NSNotification.Name("HidePreviewBarForcefully"), object: nil, queue: .main) { [weak self] _ in
-            self?.stateManager.hidePreview()
+
+        installGlobalMonitorsIfNeeded()
+    }
+
+    private func installGlobalMonitorsIfNeeded() {
+        if forceHideObserver == nil {
+            // 监听强制关闭通知（处理 Dock 右键点击）
+            forceHideObserver = NotificationCenter.default.addObserver(
+                forName: NSNotification.Name("HidePreviewBarForcefully"),
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.stateManager.hidePreview()
+            }
         }
-        
-        // ⭐️ 全局点击隐藏：监听系统任何地方的点击事件
-        NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-            guard let self = self, self.stateManager.currentState != .hidden else { return }
-            
-            // 采用全局坐标（(0,0) 为左下角）
-            let mouseLocation = NSEvent.mouseLocation
-            
-            // A. 如果点击在预览条内，不隐藏（虽然 Global Monitor 理论上不报本应用的点击，但这里加一层保险）
-            if let window = self.previewWindow, window.frame.contains(mouseLocation) {
-                return
+
+        if globalClickMonitor == nil {
+            // ⭐️ 全局点击隐藏：监听系统任何地方的点击事件
+            globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+                guard let self = self, self.stateManager.currentState != .hidden else { return }
+
+                // 采用全局坐标（(0,0) 为左下角）
+                let mouseLocation = NSEvent.mouseLocation
+
+                // A. 如果点击在预览条内，不隐藏（虽然 Global Monitor 理论上不报本应用的点击，但这里加一层保险）
+                if let window = self.previewWindow, window.frame.contains(mouseLocation) {
+                    return
+                }
+
+                // B. 如果点击在 Dock 图标上，不隐藏
+                // 旧逻辑仅按“屏幕底部 100px”判断 Dock，Dock 在左/右侧时会误判导致预览条立刻消失。
+                let screenHeight = NSScreen.main?.frame.height ?? 800
+                let cgMousePos = CGPoint(x: mouseLocation.x, y: screenHeight - mouseLocation.y)
+                if DockIconCacheManager.shared.getBundleId(at: cgMousePos) != nil {
+                    return
+                }
+
+                // C. 只有点击桌面、其他窗口等真正“离开”的操作，才立刻强制关闭
+                self.stateManager.hidePreview()
             }
-            
-            // B. 如果点击在 Dock 图标上，不隐藏
-            // 旧逻辑仅按“屏幕底部 100px”判断 Dock，Dock 在左/右侧时会误判导致预览条立刻消失。
-            let screenHeight = NSScreen.main?.frame.height ?? 800
-            let cgMousePos = CGPoint(x: mouseLocation.x, y: screenHeight - mouseLocation.y)
-            if DockIconCacheManager.shared.getBundleId(at: cgMousePos) != nil {
-                return
-            }
-            
-            // C. 只有点击桌面、其他窗口等真正“离开”的操作，才立刻强制关闭
-            self.stateManager.hidePreview()
+        }
+    }
+
+    private func uninstallGlobalMonitors() {
+        if let observer = forceHideObserver {
+            NotificationCenter.default.removeObserver(observer)
+            forceHideObserver = nil
+        }
+        if let monitor = globalClickMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalClickMonitor = nil
         }
     }
 
@@ -187,6 +212,8 @@ class PreviewBarController: NSObject {
     /// 启动预览功能
     func start() {
         guard !isStarted else { return }
+
+        installGlobalMonitorsIfNeeded()
         
         // 检查是否启用了悬停预览
         guard SettingsManager.shared.hoverPreviewEnabled else {
@@ -211,8 +238,10 @@ class PreviewBarController: NSObject {
         guard isStarted else { return }
         
         hoverMonitor.stop()
+        cancellables.removeAll()
         hidePreviewBar()
         isStarted = false
+        uninstallGlobalMonitors()
         
         log.log("🛑 Preview bar controller stopped")
     }
@@ -343,6 +372,7 @@ class PreviewBarController: NSObject {
                 window.contentView = nil 
                 window.orderOut(nil)
                 self.viewModel = nil
+                self.cancellables.removeAll()
             }
         }
     }

@@ -11,6 +11,12 @@ import ApplicationServices
 // --- 嵌入式 Dock 图标缓存管理器 ---
 class DockIconCacheManager {
     static let shared = DockIconCacheManager()
+
+    private enum DockOrientation: String {
+        case bottom
+        case left
+        case right
+    }
     
     struct DockIconInfo {
         let frame: CGRect
@@ -18,6 +24,7 @@ class DockIconCacheManager {
     }
     
     private(set) var cachedIcons: [DockIconInfo] = []
+    private var dockOrientation: DockOrientation = .bottom
     private var lastUpdate: TimeInterval = 0
     private let queue = DispatchQueue(label: "com.dockminimize.dockcache", qos: .background)
     private var isUpdating = false
@@ -30,7 +37,9 @@ class DockIconCacheManager {
         // 降低频率，降低系统压力
         queue.async { [weak self] in
             while true {
-                self?.updateCache()
+                autoreleasepool {
+                    self?.updateCache()
+                }
                 Thread.sleep(forTimeInterval: 3.0) 
             }
         }
@@ -40,6 +49,9 @@ class DockIconCacheManager {
         guard !isUpdating else { return }
         isUpdating = true
         defer { isUpdating = false }
+
+        let orientationValue = (UserDefaults(suiteName: "com.apple.dock")?.string(forKey: "orientation") ?? "bottom").lowercased()
+        let orientation = DockOrientation(rawValue: orientationValue) ?? .bottom
         
         // --- 核心改动：所有的系统调用都在后台线程 ---
         guard let dockApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return }
@@ -113,15 +125,69 @@ class DockIconCacheManager {
         
         DispatchQueue.main.async {
             self.cachedIcons = newIcons
+            self.dockOrientation = orientation
         }
     }
-    
+
     func getBundleId(at point: CGPoint) -> String? {
-        // 纯内存操作，绝对安全
+        // 纯内存操作，绝对安全（不做任何同步 AX/Workspace 调用）
+        let orientation = dockOrientation
+        var bestBundleId: String?
+        var bestScore: CGFloat = .greatestFiniteMagnitude
+
         for icon in cachedIcons {
-            if icon.frame.contains(point) { return icon.bundleId }
+            let originalFrame = icon.frame
+            var hitFrame = originalFrame
+
+            // 解决“鼠标在 Dock 图标附近仍选中，但 frame.contains 不命中”的问题：
+            // - 沿 Dock 排列方向稍微放宽（覆盖图标间距/浮动）
+            // - 往 Dock 外侧也放宽（覆盖边缘仍可选中区域）
+            //
+            // 注意：扩展 frame 后，多个 icon 的 hitFrame 可能会重叠。
+            // 这里不能“命中第一个就返回”，否则容易把正在悬停的 icon 误判成别的（甚至是未运行的 App）
+            // 导致看起来“悬停完全没反应”。我们改为选“离原始 icon frame 中心最近”的那个。
+            let alongAxisPadding: CGFloat = 8
+            let outsidePadding: CGFloat
+            let insidePadding: CGFloat
+            switch orientation {
+            case .bottom:
+                outsidePadding = 10
+                insidePadding = max(24, min(60, hitFrame.height * 0.8))
+                hitFrame.origin.x -= alongAxisPadding
+                hitFrame.size.width += alongAxisPadding * 2
+                hitFrame.origin.y -= insidePadding
+                hitFrame.size.height += insidePadding + outsidePadding
+            case .right:
+                outsidePadding = 40
+                insidePadding = max(24, min(60, hitFrame.width * 0.8))
+                hitFrame.origin.y -= alongAxisPadding
+                hitFrame.size.height += alongAxisPadding * 2
+                hitFrame.origin.x -= insidePadding
+                hitFrame.size.width += insidePadding + outsidePadding
+            case .left:
+                outsidePadding = 40
+                insidePadding = max(24, min(60, hitFrame.width * 0.8))
+                hitFrame.origin.y -= alongAxisPadding
+                hitFrame.size.height += alongAxisPadding * 2
+                hitFrame.origin.x -= outsidePadding
+                hitFrame.size.width += insidePadding + outsidePadding
+            }
+
+            guard hitFrame.contains(point) else { continue }
+
+            let dx = point.x - originalFrame.midX
+            let dy = point.y - originalFrame.midY
+            let distance2 = dx * dx + dy * dy
+            let penalty: CGFloat = originalFrame.contains(point) ? 0 : 1_000_000
+            let score = penalty + distance2
+
+            if score < bestScore {
+                bestScore = score
+                bestBundleId = icon.bundleId
+            }
         }
-        return nil
+
+        return bestBundleId
     }
 }
 
@@ -133,6 +199,8 @@ class DockEventMonitor {
     private let log = DebugLogger.shared
     
     func start() {
+        guard eventTap == nil else { return }
+
         // 监听左键、右键、中键点击，用于拦截和隐藏预览
         let eventMask = (1 << CGEventType.leftMouseDown.rawValue) | 
                          (1 << CGEventType.rightMouseDown.rawValue) | 
@@ -143,7 +211,7 @@ class DockEventMonitor {
             options: .defaultTap,
             eventsOfInterest: CGEventMask(eventMask),
             callback: { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
-                guard let refcon = refcon else { return Unmanaged.passRetained(event) }
+                guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
                 let monitor = Unmanaged<DockEventMonitor>.fromOpaque(refcon).takeUnretainedValue()
                 return monitor.handleEvent(proxy: proxy, type: type, event: event)
             },
@@ -157,10 +225,21 @@ class DockEventMonitor {
     }
     
     func stop() {
-        if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: false) }
-        if let source = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes) }
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+        }
+
+        if let source = runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+            CFRunLoopSourceInvalidate(source)
+        }
         eventTap = nil
         runLoopSource = nil
+    }
+
+    deinit {
+        stop()
     }
     
     private func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -168,8 +247,19 @@ class DockEventMonitor {
         
         // 1. 系统禁用检查 (HID 链条安全检查)
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            // 被系统禁用时，通常是由于权限变更，直接退出是防止卡死的最优解
-            exit(0) 
+            // 事件 tap 可能因“回调超时”或“用户输入”被系统临时禁用。
+            // 之前这里直接 `exit(0)` 会导致用户感知为“软件突然自动退出”。
+            // 改为：尝试立即重新启用 tap（必要时重建），并继续放通事件。
+            let reason = (type == .tapDisabledByTimeout) ? "timeout" : "userInput"
+            log.log("Dock event tap disabled (\(reason)); attempting to re-enable.")
+
+            if let tap = eventTap {
+                CGEvent.tapEnable(tap: tap, enable: true)
+            } else {
+                start()
+            }
+
+            return Unmanaged.passUnretained(event)
         }
         
         // 2. 避免在系统设置窗口活跃时进行任何操作
@@ -190,28 +280,28 @@ class DockEventMonitor {
                     NotificationCenter.default.post(name: NSNotification.Name("HidePreviewBarForcefully"), object: nil)
                 }
             }
-            return Unmanaged.passRetained(event)
+            return Unmanaged.passUnretained(event)
         }
         
-        guard type == .leftMouseDown else { return Unmanaged.passRetained(event) }
+        guard type == .leftMouseDown else { return Unmanaged.passUnretained(event) }
         
         let location = event.location
         
         // 3. 快速命中测试：是否点在 Dock 图标上（纯内存操作，不触碰任何系统调用）
         // 旧版本用“屏幕底部 100px”判定 Dock 区域，Dock 在左/右侧或在副屏时会完全失效。
         guard let clickedBundleId = DockIconCacheManager.shared.getBundleId(at: location) else {
-            return Unmanaged.passRetained(event)
+            return Unmanaged.passUnretained(event)
         }
         
         // 防抖：缩短至 0.1s，适应快速连击
-        if Date().timeIntervalSince(lastProcessedTime) < 0.1 { return Unmanaged.passRetained(event) }
+        if Date().timeIntervalSince(lastProcessedTime) < 0.1 { return Unmanaged.passUnretained(event) }
         
         // 4. --- 终极防御：给所有的业务逻辑加一个“超时保险箱” ---
         // 我们在后台线程执行业务代码，如果 10ms 内没跑完（说明系统 AX 或 Workspace 锁住了），
         // 那么主线程立即直接放通事件，不等待，不卡死系统。
         
         let semaphore = DispatchSemaphore(value: 0)
-        var resultEvent: Unmanaged<CGEvent>? = Unmanaged.passRetained(event)
+        var resultEvent: Unmanaged<CGEvent>? = Unmanaged.passUnretained(event)
         
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             guard let self = self else { 
@@ -292,7 +382,7 @@ class DockEventMonitor {
         let waitResult = semaphore.wait(timeout: .now() + 0.01)
         if waitResult == .timedOut {
             // 系统响应太慢（说明正在处理权限或忙碌），为了保命，这里直接放行所有点击事件。
-            return Unmanaged.passRetained(event)
+            return Unmanaged.passUnretained(event)
         }
         
         return resultEvent

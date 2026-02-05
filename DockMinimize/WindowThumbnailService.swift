@@ -320,8 +320,10 @@ class WindowThumbnailService {
         var result: [CGWindowID: NSImage] = [:]
         
         for window in windows {
-            if let thumbnail = captureThumbnail(for: window.windowId, forceRefresh: forceRefresh) {
-                result[window.windowId] = thumbnail
+            autoreleasepool {
+                if let thumbnail = captureThumbnail(for: window.windowId, forceRefresh: forceRefresh) {
+                    result[window.windowId] = thumbnail
+                }
             }
         }
         
