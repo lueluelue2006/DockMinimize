@@ -404,8 +404,11 @@ class DockEventMonitor {
             return Unmanaged.passUnretained(event)
         }
         
-        // 防抖：缩短至 0.1s，适应快速连击
-        if Date().timeIntervalSince(lastProcessedTime) < 0.1 { return Unmanaged.passUnretained(event) }
+        // 防抖：缩短至 0.1s，适应快速连击。
+        // 命中防抖时吞掉事件，避免回落到系统默认点击行为。
+        if Date().timeIntervalSince(lastProcessedTime) < 0.1 {
+            return nil
+        }
         
         // 4. --- 终极防御：给所有的业务逻辑加一个“超时保险箱” ---
         // 我们在后台线程执行业务代码，如果 10ms 内没跑完（说明系统 AX 或 Workspace 锁住了），
@@ -454,9 +457,30 @@ class DockEventMonitor {
                         }
                         
                         // ⭐️ 核心修复：如果是 Finder，即便没有可见窗口也要继续逻辑（去恢复被缩小的窗口）。
-                        // 如果是其他应用，确实没有窗口时才放行。
+                        // 如果是其他应用，确实没有窗口时改为本地 reopen/activate，避免回落系统默认行为。
                         if !hasVisibleWindows && clickedBundleId != "com.apple.finder" {
-                            // App 未隐藏，但在屏幕上找不到 >100x100 的窗口 -> 真正的无窗口状态 -> 放行给系统 Reopen
+                            // App 未隐藏，但在屏幕上找不到 >100x100 的窗口 -> 真正的无窗口状态。
+                            // 这里改为本地处理（reopen/activate）并吞掉事件。
+                            self.lastProcessedTime = Date()
+
+                            NotificationCenter.default.post(
+                                name: NSNotification.Name("DockIconClicked"),
+                                object: nil,
+                                userInfo: ["bundleId": clickedBundleId, "action": "activate"]
+                            )
+
+                            DispatchQueue.main.async {
+                                let config = NSWorkspace.OpenConfiguration()
+                                config.activates = true
+
+                                if let url = targetApp.bundleURL {
+                                    NSWorkspace.shared.openApplication(at: url, configuration: config, completionHandler: nil)
+                                } else {
+                                    targetApp.activate(options: .activateIgnoringOtherApps)
+                                }
+                            }
+
+                            resultEvent = nil
                             semaphore.signal()
                             return
                         }
@@ -489,11 +513,10 @@ class DockEventMonitor {
             semaphore.signal()
         }
         
-        // 最多等 10 毫秒。如果系统没响应，说明环境危险，立即放手。
-        let waitResult = semaphore.wait(timeout: .now() + 0.01)
+        // 最多等 40 毫秒。若仍超时则吞掉事件，避免回落系统默认行为。
+        let waitResult = semaphore.wait(timeout: .now() + 0.04)
         if waitResult == .timedOut {
-            // 系统响应太慢（说明正在处理权限或忙碌），为了保命，这里直接放行所有点击事件。
-            return Unmanaged.passUnretained(event)
+            return nil
         }
         
         return resultEvent
