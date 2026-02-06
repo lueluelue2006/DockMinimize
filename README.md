@@ -6,13 +6,15 @@ Website：https://ivean.com/dockminimize/
 ## Features
 
 ### Window Visibility Toggle
-Simply click an application icon in the Dock to immediately hide all windows of that app. Click again to restore them. This interaction provides a familiar experience for users transitioning from Windows to macOS.
+Simply click an application icon in the Dock to immediately hide all windows of that app. Click again to unhide and activate the app, while keeping previously minimized windows minimized.
+
+The toggle script logic has been updated to replace the previous "restore all minimized windows" behavior, so window states stay more predictable after a hide/show cycle.
 
 ### Hover Preview
 When hovering over a Dock icon, DockMinimize displays real-time thumbnails of all open windows for that app. You can click a specific thumbnail in the preview bar to bring a window to the front or minimize it, significantly improving multi-window management efficiency.
 
 ### Intelligent Multi-Window Management
-DockMinimize features smart logic for applications with multiple windows. A single click can restore all minimized windows or automatically switch to a high-performance "Hide" mode when too many windows are open, ensuring system stability.
+DockMinimize features smart logic for applications with multiple windows. It preserves per-window minimized state during hide/show toggles and switches to a high-performance "Hide" mode when needed.
 
 ### Application Blacklist
 You can add specific applications to a blacklist. DockMinimize will completely bypass blacklisted apps, leaving their original interaction logic untouched.
@@ -49,13 +51,15 @@ DockMinimize 是一款为 macOS 打造的增强工具，它弥补了 macOS 在 D
 ## 功能特性
 
 ### 窗口显隐切换
-只需点击 Dock 栏中的应用程序图标，即可立即隐藏该应用的所有窗口。再次点击，即可恢复显示。这种交互逻辑为从 Windows 切换到 macOS 的用户提供了熟悉的体验。
+只需点击 Dock 栏中的应用程序图标，即可立即隐藏该应用的所有窗口。再次点击时，会取消隐藏并激活应用，同时保留原本已最小化窗口的最小化状态。
+
+当前版本已将这部分切换脚本逻辑替换为新的实现：不再使用“恢复全部最小化窗口”的旧逻辑，从而让隐藏/恢复后的窗口状态更可预期。
 
 ### 悬停预览 (Hover Preview)
 当鼠标悬停在 Dock 图标上时，DockMinimize 会显示该应用所有打开窗口的实时缩略图。您可以直接在预览条中点击特定窗口进行置顶显示或最小化操作，提升多窗口管理的效率。
 
 ### 智能多窗口管理
-对于拥有多个窗口的应用，DockMinimize 提供了智能化的处理逻辑。一键即可恢复应用的所有最小化窗口，或在窗口过多时自动切换为高效的隐藏模式，确保系统运行的稳定性。
+对于拥有多个窗口的应用，DockMinimize 提供了智能化的处理逻辑：在隐藏/恢复切换时保留各窗口自身的最小化状态，并在需要时自动切换为高效的隐藏模式，确保系统运行的稳定性。
 
 ### 应用黑名单
 您可以根据需要将特定的应用程序加入黑名单。对于黑名单中的应用，DockMinimize 将完全避让，不干预其原有的交互逻辑。
