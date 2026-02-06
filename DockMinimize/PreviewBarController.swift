@@ -508,7 +508,7 @@ extension PreviewBarController: HoverEventMonitorDelegate {
         }
         
         // 延迟点再隐藏，给用户移动到预览条的时间
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             guard let self = self else { return }
             
             // 检查鼠标当前位置
@@ -534,8 +534,8 @@ extension PreviewBarController: HoverEventMonitorDelegate {
     }
     
     func hoverEventMonitorDidExitPreviewBar(_ monitor: HoverEventMonitor) {
-        // 增加延迟（300ms），防止鼠标在缩略图间切换或快速移动时误触发隐藏
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+        // 增加延迟（50ms），防止鼠标在缩略图间切换或快速移动时误触发隐藏
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             guard let self = self else { return }
             // 再次检查鼠标是否真的离开了
             let mouseLocation = NSEvent.mouseLocation
