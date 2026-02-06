@@ -457,30 +457,8 @@ class DockEventMonitor {
                         }
                         
                         // ⭐️ 核心修复：如果是 Finder，即便没有可见窗口也要继续逻辑（去恢复被缩小的窗口）。
-                        // 如果是其他应用，确实没有窗口时改为本地 reopen/activate，避免回落系统默认行为。
+                        // 如果是其他应用，确实没有窗口时，仍交由系统 Reopen 流程处理。
                         if !hasVisibleWindows && clickedBundleId != "com.apple.finder" {
-                            // App 未隐藏，但在屏幕上找不到 >100x100 的窗口 -> 真正的无窗口状态。
-                            // 这里改为本地处理（reopen/activate）并吞掉事件。
-                            self.lastProcessedTime = Date()
-
-                            NotificationCenter.default.post(
-                                name: NSNotification.Name("DockIconClicked"),
-                                object: nil,
-                                userInfo: ["bundleId": clickedBundleId, "action": "activate"]
-                            )
-
-                            DispatchQueue.main.async {
-                                let config = NSWorkspace.OpenConfiguration()
-                                config.activates = true
-
-                                if let url = targetApp.bundleURL {
-                                    NSWorkspace.shared.openApplication(at: url, configuration: config, completionHandler: nil)
-                                } else {
-                                    targetApp.activate(options: .activateIgnoringOtherApps)
-                                }
-                            }
-
-                            resultEvent = nil
                             semaphore.signal()
                             return
                         }

@@ -130,6 +130,18 @@ class WindowManager {
             }
             return
         }
+
+        // 非 Finder：从后台切回前台时仅激活应用，不自动恢复所有最小化窗口。
+        // 这样可保持“之前已最小化的窗口仍保持最小化”。
+        if bundleId != "com.apple.finder" {
+            app.activate(options: .activateIgnoringOtherApps)
+            minimizedApps.remove(bundleId)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.isTransitioning = false
+            }
+            return
+        }
         
         // 还原所有窗口
         let pid = app.processIdentifier
