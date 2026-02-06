@@ -110,6 +110,16 @@ class WindowManager {
         guard !isTransitioning, let bundleId = app.bundleIdentifier else { return }
         
         isTransitioning = true
+        if app.isHidden {
+            app.unhide()
+            app.activate(options: .activateIgnoringOtherApps)
+            minimizedApps.remove(bundleId)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.isTransitioning = false
+            }
+            return
+        }
         
         // 还原所有窗口
         let pid = app.processIdentifier
