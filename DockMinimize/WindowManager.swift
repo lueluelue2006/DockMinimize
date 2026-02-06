@@ -13,6 +13,9 @@ class WindowManager {
     
     /// 存储已最小化的应用
     private var minimizedApps: Set<String> = []
+
+    /// 记录由 DockMinimize 主动隐藏过的应用（用于稳定恢复路径）
+    private var hiddenByDockMinimizeApps: Set<String> = []
     
     /// 递归检查是否正在进行窗口操作，防止连击导致的竞态和崩溃
     var isTransitioning: Bool = false
@@ -33,6 +36,7 @@ class WindowManager {
             // 直接由系统接管。
             if wasHidden {
                 app.unhide()
+                hiddenByDockMinimizeApps.remove(bundleId)
             }
             app.activate(options: .activateIgnoringOtherApps)
             // 早期返回，不执行任何自定义 Restore 逻辑，完全信任系统。
@@ -110,9 +114,15 @@ class WindowManager {
         guard !isTransitioning, let bundleId = app.bundleIdentifier else { return }
         
         isTransitioning = true
-        if app.isHidden {
-            app.unhide()
+
+        // 关键兜底：即便 app.isHidden 在某些时序下短暂不准确，
+        // 只要是由 DockMinimize 隐藏过，也按“仅取消隐藏”处理，避免误恢复全部最小化窗口。
+        if app.isHidden || hiddenByDockMinimizeApps.contains(bundleId) {
+            if app.isHidden {
+                app.unhide()
+            }
             app.activate(options: .activateIgnoringOtherApps)
+            hiddenByDockMinimizeApps.remove(bundleId)
             minimizedApps.remove(bundleId)
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
@@ -151,7 +161,9 @@ class WindowManager {
         if app.isHidden {
             app.unhide()
             app.activate(options: .activateIgnoringOtherApps)
+            hiddenByDockMinimizeApps.remove(bundleId)
         } else {
+            hiddenByDockMinimizeApps.insert(bundleId)
             app.hide()
         }
     }
