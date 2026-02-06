@@ -39,6 +39,7 @@ class SettingsManager: ObservableObject {
     private let kLanguage = "appLanguage"
     private let kHoverPreviewEnabled = "hoverPreviewEnabled"
     private let kBlacklistedBundleIDs = "blacklistedBundleIDs"
+    private let kDockClickDebugLogs = "dockClickDebugLogs"
     
     // Removed OperationMode property
     
@@ -87,6 +88,12 @@ class SettingsManager: ObservableObject {
             NotificationCenter.default.post(name: .blacklistChanged, object: nil)
         }
     }
+
+    @Published var enableDockClickDebugLogs: Bool {
+        didSet {
+            defaults.set(enableDockClickDebugLogs, forKey: kDockClickDebugLogs)
+        }
+    }
     
     private init() {
         // 加载菜单栏显示
@@ -127,6 +134,12 @@ class SettingsManager: ObservableObject {
         
         // 加载黑名单
         self.blacklistedBundleIDs = defaults.stringArray(forKey: kBlacklistedBundleIDs) ?? []
+
+        // Dock 点击行为调试日志（默认关闭）
+        if defaults.object(forKey: kDockClickDebugLogs) == nil {
+            defaults.set(false, forKey: kDockClickDebugLogs)
+        }
+        self.enableDockClickDebugLogs = defaults.bool(forKey: kDockClickDebugLogs)
     }
     
     /// 翻译方法

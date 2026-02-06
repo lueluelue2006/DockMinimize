@@ -10,12 +10,17 @@ import ApplicationServices
 
 class WindowManager {
     static let shared = WindowManager()
+    private let log = DebugLogger.shared
     
     /// 存储已最小化的应用
     private var minimizedApps: Set<String> = []
 
     /// 记录由 DockMinimize 主动隐藏过的应用（用于稳定恢复路径）
     private var hiddenByDockMinimizeApps: Set<String> = []
+
+    private var debugDockClicksEnabled: Bool {
+        SettingsManager.shared.enableDockClickDebugLogs
+    }
     
     /// 递归检查是否正在进行窗口操作，防止连击导致的竞态和崩溃
     var isTransitioning: Bool = false
@@ -115,6 +120,10 @@ class WindowManager {
         
         isTransitioning = true
 
+        if debugDockClicksEnabled {
+            log.log("🪟 ensureVisible start: bundle=\(bundleId), appHidden=\(app.isHidden), markedHiddenByDockMinimize=\(hiddenByDockMinimizeApps.contains(bundleId))")
+        }
+
         // 关键兜底：即便 app.isHidden 在某些时序下短暂不准确，
         // 只要是由 DockMinimize 隐藏过，也按“仅取消隐藏”处理，避免误恢复全部最小化窗口。
         if app.isHidden || hiddenByDockMinimizeApps.contains(bundleId) {
@@ -128,6 +137,9 @@ class WindowManager {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                 self?.isTransitioning = false
             }
+            if debugDockClicksEnabled {
+                log.log("🪟 ensureVisible path: unhide+activate only (preserve minimized windows) for \(bundleId)")
+            }
             return
         }
 
@@ -140,6 +152,9 @@ class WindowManager {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                 self?.isTransitioning = false
             }
+            if debugDockClicksEnabled {
+                log.log("🪟 ensureVisible path: activate-only (non-Finder) for \(bundleId)")
+            }
             return
         }
         
@@ -148,6 +163,10 @@ class WindowManager {
         let appElement = AXUIElementCreateApplication(pid)
         restoreAllWindows(appElement: appElement, app: app)
         minimizedApps.remove(bundleId)
+
+        if debugDockClicksEnabled {
+            log.log("🪟 ensureVisible path: restoreAllWindows (Finder) for \(bundleId)")
+        }
         
         // ⭐️ 固定延时解锁：Finder 缩短为 0.1s 以实现极致丝滑，其他应用维持 0.5s
         let delay = (bundleId == "com.apple.finder") ? 0.1 : 0.5

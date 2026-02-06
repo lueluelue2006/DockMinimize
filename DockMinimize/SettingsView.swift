@@ -340,6 +340,14 @@ struct SettingsView: View {
                         title: t("在菜单栏显示图标", "Show Icon in Menu Bar"),
                         isOn: $settingsManager.showInMenuBar
                     )
+
+                    Divider().padding(.leading, 42)
+
+                    toggleRow(
+                        icon: "ladybug",
+                        title: t("Dock点击调试日志", "Dock Click Debug Logs"),
+                        isOn: $settingsManager.enableDockClickDebugLogs
+                    )
                 }
                 .padding(.vertical, 4) // 只保留垂直 padding，移除水平 padding 以对齐
             }
@@ -756,5 +764,4 @@ struct RecommendationRow: View {
         }
     }
 }
-
 

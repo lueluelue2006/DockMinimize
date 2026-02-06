@@ -10,6 +10,8 @@ Simply click an application icon in the Dock to immediately hide all windows of 
 
 The toggle script logic has been updated to replace the previous "restore all minimized windows" behavior, so window states stay more predictable after a hide/show cycle.
 
+Note: For non-Finder apps, the background-to-foreground activation path now uses activate-only (without restore-all), so minimized windows keep their prior state even after switching between apps.
+
 ### Hover Preview
 When hovering over a Dock icon, DockMinimize displays real-time thumbnails of all open windows for that app. You can click a specific thumbnail in the preview bar to bring a window to the front or minimize it, significantly improving multi-window management efficiency.
 
@@ -60,6 +62,8 @@ DockMinimize 是一款为 macOS 打造的增强工具，它弥补了 macOS 在 D
 
 ### 智能多窗口管理
 对于拥有多个窗口的应用，DockMinimize 提供了智能化的处理逻辑：在隐藏/恢复切换时保留各窗口自身的最小化状态，并在需要时自动切换为高效的隐藏模式，确保系统运行的稳定性。
+
+补充：对于非 Finder 应用，从后台切回前台时使用仅激活（activate-only）路径，不执行“恢复全部最小化窗口”，以保持窗口状态一致性。
 
 ### 应用黑名单
 您可以根据需要将特定的应用程序加入黑名单。对于黑名单中的应用，DockMinimize 将完全避让，不干预其原有的交互逻辑。

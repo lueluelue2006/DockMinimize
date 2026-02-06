@@ -308,6 +308,10 @@ class DockEventMonitor {
     private var lastProcessedTime: Date = Date.distantPast
     
     private let log = DebugLogger.shared
+
+    private var debugDockClicksEnabled: Bool {
+        SettingsManager.shared.enableDockClickDebugLogs
+    }
     
     func start() {
         guard eventTap == nil else { return }
@@ -401,12 +405,18 @@ class DockEventMonitor {
         // 3. 快速命中测试：是否点在 Dock 图标上（纯内存操作，不触碰任何系统调用）
         // 旧版本用“屏幕底部 100px”判定 Dock 区域，Dock 在左/右侧或在副屏时会完全失效。
         guard let clickedBundleId = DockIconCacheManager.shared.getBundleId(at: location) else {
+            if debugDockClicksEnabled {
+                log.log("🧭 DockClick passthrough: no bundle hit at point=(\(Int(location.x)),\(Int(location.y)))")
+            }
             return Unmanaged.passUnretained(event)
         }
         
         // 防抖：缩短至 0.1s，适应快速连击。
         // 命中防抖时吞掉事件，避免回落到系统默认点击行为。
         if Date().timeIntervalSince(lastProcessedTime) < 0.1 {
+            if debugDockClicksEnabled {
+                log.log("🧭 DockClick swallowed: debounce hit for \(clickedBundleId)")
+            }
             return nil
         }
         
@@ -459,6 +469,9 @@ class DockEventMonitor {
                         // ⭐️ 核心修复：如果是 Finder，即便没有可见窗口也要继续逻辑（去恢复被缩小的窗口）。
                         // 如果是其他应用，确实没有窗口时，仍交由系统 Reopen 流程处理。
                         if !hasVisibleWindows && clickedBundleId != "com.apple.finder" {
+                            if debugDockClicksEnabled {
+                                log.log("🧭 DockClick passthrough: no visible windows for \(clickedBundleId), let system reopen")
+                            }
                             semaphore.signal()
                             return
                         }
@@ -469,6 +482,10 @@ class DockEventMonitor {
                     // 如果在后台，意图是 Activate (提升至最前)
                     let isAlreadyActive = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == clickedBundleId
                     let action = isAlreadyActive ? "toggle" : "activate"
+
+                    if self.debugDockClicksEnabled {
+                        self.log.log("🧭 DockClick intercepted: bundle=\(clickedBundleId), action=\(action), hidden=\(targetApp.isHidden), visibleWindows=\(hasVisibleWindows)")
+                    }
                     
                     NotificationCenter.default.post(
                         name: NSNotification.Name("DockIconClicked"),
@@ -494,6 +511,9 @@ class DockEventMonitor {
         // 最多等 40 毫秒。若仍超时则吞掉事件，避免回落系统默认行为。
         let waitResult = semaphore.wait(timeout: .now() + 0.04)
         if waitResult == .timedOut {
+            if debugDockClicksEnabled {
+                log.log("🧭 DockClick swallowed: worker timeout for intercepted click")
+            }
             return nil
         }
         
